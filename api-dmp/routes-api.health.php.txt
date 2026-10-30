@@ -1,0 +1,21 @@
+<?php
+// api-dmp/routes/api.php : route de test fournie
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/health', function () {
+    try { DB::select('select 1'); $db = 'ok'; }
+    catch (\Throwable $e) { $db = 'ko'; }
+
+    try {
+        $anip = Http::timeout(3)
+            ->get(config('services.anip.url') . '/api/citoyens/9912345678')
+            ->status();
+    } catch (\Throwable $e) { $anip = 'indisponible'; }
+
+    return response()->json(['db' => $db, 'anip' => $anip]);
+});
+
+// config/services.php : ajouter l'entrée
+//   'anip' => ['url' => env('ANIP_URL')],

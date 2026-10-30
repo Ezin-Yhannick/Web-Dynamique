@@ -1,0 +1,116 @@
+name: dmp
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [dmp-net]
+
+  anip:
+    build: ./service-anip
+    restart: unless-stopped
+    networks: [dmp-net]
+
+  centres:
+    build: ./service-centres-sante
+    restart: unless-stopped
+    networks: [dmp-net]
+
+  pharmacies:
+    build: ./service-pharmacies
+    restart: unless-stopped
+    networks: [dmp-net]
+
+  medecins:
+    build: ./service-medecins
+    restart: unless-stopped
+    networks: [dmp-net]
+
+  hardhat:
+    build: ./blockchain
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [dmp-net]
+
+  blockchain:
+    build: ./service-blockchain
+    restart: unless-stopped
+    environment:
+      HARDHAT_RPC_URL: http://hardhat:8545
+    depends_on:
+      hardhat:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [dmp-net]
+
+  api-dmp:
+    build: ./api-dmp
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      APP_KEY: ${APP_KEY}
+      DB_CONNECTION: mysql
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      ANIP_URL: ${ANIP_URL}
+      CENTRES_URL: ${CENTRES_URL}
+      PHARMACIES_URL: ${PHARMACIES_URL}
+      MEDECINS_URL: ${MEDECINS_URL}
+      BLOCKCHAIN_URL: ${BLOCKCHAIN_URL}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
+    depends_on:
+      db:
+        condition: service_healthy
+      blockchain:
+        condition: service_healthy
+      anip:
+        condition: service_started
+      centres:
+        condition: service_started
+      pharmacies:
+        condition: service_started
+      medecins:
+        condition: service_started
+    networks: [dmp-net]
+
+  front-react:
+    build:
+      context: ./front-react
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api-dmp
+    networks: [dmp-net]
+
+networks:
+  dmp-net:
+
+volumes:
+  db_data:

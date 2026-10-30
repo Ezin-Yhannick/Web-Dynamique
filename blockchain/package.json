@@ -1,0 +1,7 @@
+{
+  "name": "blockchain",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": { "node": "hardhat node --hostname 0.0.0.0" },
+  "devDependencies": { "hardhat": "2.22.17" }
+}
