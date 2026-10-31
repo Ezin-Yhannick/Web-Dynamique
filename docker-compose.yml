@@ -1,0 +1,228 @@
+# DMP – environnement complet. Démarrage : docker compose up -d
+# Toutes les variables ont une valeur par défaut : aucun .env n'est requis (ENF-16).
+name: dmp
+
+# ── Blocs réutilisés ───────────────────────────────────────────────
+x-php-healthcheck: &php-health
+  test: ["CMD", "php", "-r", "exit(@fsockopen('127.0.0.1', 8000) ? 0 : 1);"]
+  interval: 5s
+  timeout: 5s
+  retries: 30
+  start_period: 40s
+
+x-laravel-build: &laravel-build
+  context: .                       # racine du dépôt : le Dockerfile partagé est dans docker/laravel
+  dockerfile: docker/laravel/Dockerfile
+
+x-laravel-common: &laravel-common
+  APP_ENV: ${APP_ENV:-local}
+  APP_DEBUG: ${APP_DEBUG:-true}
+  LOG_CHANNEL: stderr              # visible avec « docker compose logs »
+  LOG_LEVEL: ${LOG_LEVEL:-debug}
+  CACHE_STORE: file
+  SESSION_DRIVER: file
+
+x-api-build: &api-build
+  <<: *laravel-build
+  args:
+    APP_DIR: api-dmp
+
+x-api-env: &api-env
+  <<: *laravel-common
+  APP_NAME: DMP
+  APP_URL: http://localhost:${API_PORT:-8000}
+  APP_KEY: ${APP_KEY:-base64:S7gjtG3fS6IQ09kULxWsTtsBxT+BO7xxDm+k0yyGqZA=}
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_PORT: "3306"
+  DB_DATABASE: ${MYSQL_DATABASE:-dmp}
+  DB_USERNAME: ${MYSQL_USER:-dmp}
+  DB_PASSWORD: ${MYSQL_PASSWORD:-dmp_password}
+  QUEUE_CONNECTION: database
+  CORS_ALLOWED_ORIGINS: http://localhost:${FRONT_PORT:-5173}      # ENF-07
+  PSEUDONYM_SECRET: ${PSEUDONYM_SECRET:-71ebbb89c51a0345369322a0b688a3f6da592cf7d7805a49a66f36f9ef7d7690}
+  MAIL_MAILER: smtp
+  MAIL_HOST: mailpit
+  MAIL_PORT: "1025"
+  ANIP_URL: http://anip:8000
+  CENTRES_URL: http://centres:8000
+  PHARMACIES_URL: http://pharmacies:8000
+  MEDECINS_URL: http://medecins:8000
+  BLOCKCHAIN_URL: http://blockchain:3000
+
+x-ref-service: &ref-service        # services de référence : Laravel + SQLite, indépendants
+  restart: unless-stopped
+  environment:
+    <<: *laravel-common
+    APP_KEY: ${REF_APP_KEY:-base64:Nt6OYFL97dLZok6kkgHehexD2xSBthCeQxdsxdWHBmk=}
+    DB_CONNECTION: sqlite
+    DB_DATABASE: /var/www/html/database/database.sqlite
+    QUEUE_CONNECTION: sync
+    RUN_MIGRATIONS: "true"
+    RUN_SEEDERS: "true"            # annexe F : jeux de données chargés au démarrage
+  healthcheck: *php-health
+
+services:
+  # ── Base de données ──────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-dmp}
+      MYSQL_USER: ${MYSQL_USER:-dmp}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-dmp_password}
+    ports: ["${MYSQL_PORT:-3307}:3306"]      # 3307 pour ne pas heurter un MySQL local
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  mailpit:                                    # capture les courriels (EF-06)
+    image: axllent/mailpit:v1.21
+    restart: unless-stopped
+    ports: ["${MAILPIT_PORT:-8025}:8025"]
+
+  # ── Services de référence simulés (groupe 3) ─────────────────────
+  anip:
+    <<: *ref-service
+    build:
+      <<: *laravel-build
+      args: { APP_DIR: service-anip }
+    image: dmp/anip
+    ports: ["${ANIP_PORT:-8001}:8000"]
+
+  centres:
+    <<: *ref-service
+    build:
+      <<: *laravel-build
+      args: { APP_DIR: service-centres-sante }
+    image: dmp/centres
+    ports: ["${CENTRES_PORT:-8002}:8000"]
+
+  pharmacies:
+    <<: *ref-service
+    build:
+      <<: *laravel-build
+      args: { APP_DIR: service-pharmacies }
+    image: dmp/pharmacies
+    ports: ["${PHARMACIES_PORT:-8003}:8000"]
+
+  medecins:
+    <<: *ref-service
+    build:
+      <<: *laravel-build
+      args: { APP_DIR: service-medecins }
+    image: dmp/medecins
+    ports: ["${MEDECINS_PORT:-8004}:8000"]
+
+  # ── Blockchain (groupe 4) ────────────────────────────────────────
+  hardhat:                                    # réseau Ethereum local (en mémoire)
+    build: ./blockchain
+    image: dmp/hardhat
+    restart: unless-stopped
+    ports: ["${HARDHAT_PORT:-8545}:8545"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8545',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',method:'eth_blockNumber',params:[],id:1})}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  hardhat-deploy:                             # job unique : déploie RegistreDMP puis s'arrête
+    build: ./blockchain
+    image: dmp/hardhat
+    command: npx hardhat run scripts/deploy.js --network docker
+    restart: "no"
+    environment:
+      HARDHAT_RPC_URL: http://hardhat:8545
+      DEPLOY_OUTPUT: /shared/RegistreDMP.json   # {address, abi}
+    volumes: [chain-shared:/shared]
+    depends_on:
+      hardhat: { condition: service_healthy }
+
+  blockchain:                                 # service Node.js / ethers.js : http://blockchain:3000
+    build: ./service-blockchain
+    image: dmp/service-blockchain
+    restart: unless-stopped
+    environment:
+      PORT: "3000"
+      RPC_URL: http://hardhat:8545
+      PRIVATE_KEY: ${BLOCKCHAIN_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
+      CONTRACT_FILE: /shared/RegistreDMP.json
+    volumes: [chain-shared:/shared:ro]
+    ports: ["${BLOCKCHAIN_PORT:-3000}:3000"]
+    depends_on:
+      hardhat-deploy: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(3000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # ── API du DMP (groupe 1) ────────────────────────────────────────
+  api-dmp:
+    build: *api-build
+    image: dmp/api-dmp
+    restart: unless-stopped
+    environment:
+      <<: *api-env
+      RUN_MIGRATIONS: "true"
+      RUN_SEEDERS: ${RUN_SEEDERS:-true}
+    ports: ["${API_PORT:-8000}:8000"]
+    volumes: [api-storage:/var/www/html/storage]   # documents chiffrés (ENF-06) : doivent survivre
+    depends_on:
+      mysql:      { condition: service_healthy }
+      anip:       { condition: service_healthy }
+      centres:    { condition: service_healthy }
+      pharmacies: { condition: service_healthy }
+      medecins:   { condition: service_healthy }
+      blockchain: { condition: service_healthy }
+    healthcheck: *php-health
+
+  api-queue:                                  # ancrage différé / re-tentatives (cas « ancrage en attente »)
+    build: *api-build
+    image: dmp/api-dmp
+    restart: unless-stopped
+    command: php artisan queue:work --sleep=3 --tries=3 --max-time=3600
+    environment: *api-env
+    volumes: [api-storage:/var/www/html/storage]
+    depends_on:
+      api-dmp: { condition: service_healthy }
+
+  api-scheduler:                              # expiration des consentements (EF-44) et des ordonnances (RG-05)
+    build: *api-build
+    image: dmp/api-dmp
+    restart: unless-stopped
+    command: php artisan schedule:work
+    environment: *api-env
+    volumes: [api-storage:/var/www/html/storage]
+    depends_on:
+      api-dmp: { condition: service_healthy }
+
+  # ── Front-end (groupe 2) ─────────────────────────────────────────
+  front-react:
+    build:
+      context: ./front-react
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:${API_PORT:-8000}/api}
+    image: dmp/front-react
+    restart: unless-stopped
+    ports: ["${FRONT_PORT:-5173}:80"]
+    depends_on:
+      api-dmp: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysql-data:
+  api-storage:
+  chain-shared:

@@ -1,0 +1,10 @@
+.env
+**/node_modules/
+**/vendor/
+**/dist/
+**/storage/logs/*
+**/database/*.sqlite
+blockchain/artifacts/
+blockchain/cache/
+.idea/
+.vscode/

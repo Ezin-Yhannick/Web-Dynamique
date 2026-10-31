@@ -1,0 +1,26 @@
+# Mode développement : le code est monté dans les conteneurs (pas de rebuild à chaque modification).
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# Ne PAS l'utiliser pour la recette : elle se fait avec « docker compose up -d » seul.
+services:
+  api-dmp:
+    volumes: ["./api-dmp:/var/www/html", "/var/www/html/vendor"]
+  api-queue:
+    volumes: ["./api-dmp:/var/www/html", "/var/www/html/vendor"]
+  api-scheduler:
+    volumes: ["./api-dmp:/var/www/html", "/var/www/html/vendor"]
+  anip:
+    volumes: ["./service-anip:/var/www/html", "/var/www/html/vendor"]
+  centres:
+    volumes: ["./service-centres-sante:/var/www/html", "/var/www/html/vendor"]
+  pharmacies:
+    volumes: ["./service-pharmacies:/var/www/html", "/var/www/html/vendor"]
+  medecins:
+    volumes: ["./service-medecins:/var/www/html", "/var/www/html/vendor"]
+  front-react:
+    build:
+      context: ./front-react
+      target: dev                     # serveur Vite avec rechargement à chaud
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:${API_PORT:-8000}/api}
+      CHOKIDAR_USEPOLLING: "true"     # nécessaire sous Windows
+    volumes: ["./front-react:/app", "/app/node_modules"]

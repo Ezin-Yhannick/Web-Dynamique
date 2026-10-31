@@ -1,0 +1,8 @@
+**/.git
+**/node_modules
+**/vendor
+**/.env
+**/storage/logs/*
+**/database/*.sqlite
+*.docx
+temp-laravel
